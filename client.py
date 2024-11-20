@@ -141,15 +141,6 @@ def delete_file(file_path):
         master_response = stub.DeleteFile(request).st
         print("Response from master: {}".format(master_response))
 
-def undelete_file(file_path):
-    master_addr = "localhost:{}".format(cfg.master_loc)
-    with grpc.insecure_channel(master_addr) as channel:
-        stub = gfs_pb2_grpc.MasterServerToClientStub(channel)
-        request = gfs_pb2.String(st=file_path)
-        master_response = stub.UndeleteFile(request).st
-        print("Response from master: {}".format(master_response))
-
-
 def run(command, file_path, args):
     if command == "create":
         create_file(file_path)
@@ -167,8 +158,6 @@ def run(command, file_path, args):
             read_file(file_path, int(args[0]), int(args[1]))
     elif command == "delete":
         delete_file(file_path)
-    elif command == "undelete":
-        undelete_file(file_path)
     else:
         print("Invalid Command")
 

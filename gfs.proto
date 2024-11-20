@@ -15,7 +15,6 @@ service MasterServerToClient {
   rpc CreateChunk(String) returns (String);
   rpc ReadFile(String) returns (String);
   rpc DeleteFile(String) returns (String);
-  rpc UndeleteFile(String) returns (String);
 }
 
 // Service definition for communication between Chunk Server and Client

@@ -84,7 +84,7 @@ class ChunkServer:
         chunk_path = os.path.join(self.root, chunk_handle)
         try:
             current_size = os.stat(chunk_path).st_size
-            available_space = cfg.CHUNK_SIZE - current_size
+            available_space = cfg.chunk_size - current_size
             logger.debug(f"Chunk {chunk_handle} has {available_space} bytes of available space")
             return str(available_space), Status(0, "")
         except Exception as e:
@@ -219,7 +219,7 @@ def start(port):
     """
     logger.info(f"Starting ChunkServer on port {port}")
 
-    chunk_server = ChunkServer(port=port, root=os.path.join(cfg.CHUNKSERVER_ROOT, port))
+    chunk_server = ChunkServer(port=port, root=os.path.join(cfg.chunkserver_root, port))
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=3))
     gfs_pb2_grpc.add_ChunkServerToClientServicer_to_server(
@@ -238,7 +238,7 @@ def start(port):
 
 if __name__ == "__main__":
     processes = []
-    for loc in cfg.CHUNKSERVER_LOCS:
+    for loc in cfg.chunkserver_locs:
         p = Process(target=start, args=(loc,))
         p.start()
         processes.append(p)

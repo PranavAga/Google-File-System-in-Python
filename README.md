@@ -28,7 +28,6 @@ The system provides basic file system operations such as:
 - **Append**: Append data to a file.
 - **Read**: Read data from a file.
 - **Delete**: Mark a file as deleted.
-- **Undelete**: Restore a deleted file.
 
 ### Directory Structure
 
@@ -154,12 +153,6 @@ The client provides several commands:
   python client.py delete <file_path>
   ```
 
-- **Undelete a File**:
-
-  ```bash
-  python client.py undelete <file_path>
-  ```
-
 ### Example Commands
 
 1. **Create a New File**:
@@ -190,12 +183,6 @@ The client provides several commands:
 
    ```bash
    python client.py delete /myfile
-   ```
-
-6. **Undelete the File**:
-
-   ```bash
-   python client.py undelete /myfile
    ```
 
 ### Notes
