@@ -25,21 +25,13 @@ class ChunkServer(gfs_pb2_grpc.ChunkServerServicer):
     def send_heartbeat(self):
         while True:
             time.sleep(Config.heartbeat_interval)
-            chunks = []
-            with threading.Lock():
-                for chunk_handle, version in self.chunks.items():
-                    chunks.append(gfs_pb2.ChunkMetadata(
-                        chunk_handle=chunk_handle,
-                        version=version,
-                        locations=[]  # Not needed here
-                    ))
+            chunk_handles = list(self.chunks.keys())
             request = gfs_pb2.HeartbeatRequest(
                 chunkserver_id=self.chunkserver_id,
-                chunks=chunks
+                chunk_handles=chunk_handles
             )
             try:
                 self.master_stub.Heartbeat(request)
-                print(f"Heartbeat sent from chunkserver {self.chunkserver_id}")
             except Exception as e:
                 print(f"Heartbeat failed from chunkserver {self.chunkserver_id}: {e}")
 
@@ -47,11 +39,13 @@ class ChunkServer(gfs_pb2_grpc.ChunkServerServicer):
         chunk_handle = request.chunk_handle
         version = request.version
         data = request.data
-        with self._get_chunk_lock(chunk_handle):
+        client_id = request.client_id
+        lock = self._get_chunk_lock(chunk_handle)
+        with lock:
             current_version = self.chunks.get(chunk_handle, 0)
             if version != current_version:
                 return gfs_pb2.WriteResponse(success=False, message="Version mismatch")
-            temp_file = os.path.join(self.chunk_dir, f"{chunk_handle}.tmp")
+            temp_file = os.path.join(self.chunk_dir, f"{chunk_handle}_{client_id}.tmp")
             with open(temp_file, 'wb') as f:
                 f.write(data)
             return gfs_pb2.WriteResponse(success=True, message="Write prepared")
@@ -59,11 +53,15 @@ class ChunkServer(gfs_pb2_grpc.ChunkServerServicer):
     def WriteCommit(self, request, context):
         chunk_handle = request.chunk_handle
         version = request.version
-        with self._get_chunk_lock(chunk_handle):
-            temp_file = os.path.join(self.chunk_dir, f"{chunk_handle}.tmp")
+        client_id = request.client_id
+        lock = self._get_chunk_lock(chunk_handle)
+        with lock:
+            temp_file = os.path.join(self.chunk_dir, f"{chunk_handle}_{client_id}.tmp")
             final_file = os.path.join(self.chunk_dir, chunk_handle)
             if os.path.exists(temp_file):
-                os.replace(temp_file, final_file)
+                with open(temp_file, 'rb') as tf, open(final_file, 'ab') as ff:
+                    ff.write(tf.read())
+                os.remove(temp_file)
                 self.chunks[chunk_handle] = version + 1
                 return gfs_pb2.WriteCommitResponse(success=True, message="Commit succeeded")
             else:
@@ -72,7 +70,8 @@ class ChunkServer(gfs_pb2_grpc.ChunkServerServicer):
     def ReadChunk(self, request, context):
         chunk_handle = request.handle
         chunk_file = os.path.join(self.chunk_dir, chunk_handle)
-        with self._get_chunk_lock(chunk_handle):
+        lock = self._get_chunk_lock(chunk_handle)
+        with lock:
             if os.path.exists(chunk_file):
                 with open(chunk_file, 'rb') as f:
                     data = f.read()
@@ -84,9 +83,11 @@ class ChunkServer(gfs_pb2_grpc.ChunkServerServicer):
         chunk_handle = request.chunk_handle
         version = request.version
         data = request.data
-        with self._get_chunk_lock(chunk_handle):
-            final_file = os.path.join(self.chunk_dir, chunk_handle)
-            with open(final_file, 'wb') as f:
+        client_id = request.client_id
+        lock = self._get_chunk_lock(chunk_handle)
+        with lock:
+            chunk_file = os.path.join(self.chunk_dir, chunk_handle)
+            with open(chunk_file, 'wb') as f:
                 f.write(data)
             self.chunks[chunk_handle] = version
             return gfs_pb2.WriteResponse(success=True, message="Replication successful")
