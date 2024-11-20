@@ -1,30 +1,22 @@
 import threading
-import time
 
-class Config(object):
+class Config:
     chunk_size = 64 * 1024 * 1024  # 64MB
-    master_loc = "50051"
-    chunkserver_locs = ["50052", "50053", "50054", "50055", "50056"]
-    chunkserver_root = "root_chunkserver"
+    master_port = '50051'
+    chunkserver_ports = ['50052', '50053', '50054', '50055', '50056']
+    chunkserver_root = 'root_chunkserver'
     replication_factor = 3
-    heartbeat_interval = 5  # seconds
-    lease_time = 60  # seconds
-    retry_interval = 2  # seconds
-    chunkserver_failure_timeout = 15  # seconds for failure detection
+    heartbeat_interval = 5  # in seconds
+    lease_duration = 60  # in seconds
 
-class Status(object):
-    def __init__(self, v, e):
-        self.v = v
-        self.e = e
-
-def isint(e):
+def is_integer(value):
     try:
-        int(e)
+        int(value)
         return True
     except ValueError:
         return False
 
-# Thread-safe singleton decorator for master server
+# Thread-safe singleton decorator for the master server
 def singleton(cls):
     instances = {}
     lock = threading.Lock()

@@ -1,38 +1,36 @@
 import grpc
-import gfs_pb2
-import gfs_pb2_grpc
 import sys
 
-from common import Config as cfg
+import gfs_pb2
+import gfs_pb2_grpc
 
+from common import Config
 
 def connect_to_master():
-    channel = grpc.insecure_channel(f'localhost:{cfg.master_loc}')
+    channel = grpc.insecure_channel(f'localhost:{Config.master_port}')
     stub = gfs_pb2_grpc.MasterServerStub(channel)
     return stub
-
 
 def interactive_client():
     stub = connect_to_master()
     print("Welcome to the GFS Client!")
-    print("Please enter a command. Type 'help' for a list of commands, or 'exit' to quit.")
-    
+    print("Type 'help' for a list of commands or 'exit' to quit.")
     while True:
-        command_input = input(">> ").strip()
-        if not command_input:
+        command_line = input(">> ").strip()
+        if not command_line:
             continue
-        args = command_input.split()
-        command = args[0]
+        args = command_line.split()
+        command = args[0].lower()
 
         if command == 'help':
             print("""
 Available commands:
-- create <file_path>               : Create a new file.
-- append <file_path> <data>        : Append data to a file.
-- read <file_path> <offset> <bytes>: Read data from a file starting at offset.
-- list <directory_path>            : List files in a directory.
-- delete <file_path>               : Delete a file.
-- exit                             : Exit the client.
+- create <file_path>                 : Create a new file.
+- append <file_path> <data>          : Append data to a file.
+- read <file_path> <offset> <bytes>  : Read data from a file.
+- list <directory_path>              : List files in a directory.
+- delete <file_path>                 : Delete a file.
+- exit                               : Exit the client.
 """)
         elif command == 'create':
             if len(args) != 2:
@@ -58,6 +56,9 @@ Available commands:
             file_path = args[1]
             offset = args[2]
             num_bytes = args[3]
+            if not offset.isdigit() or not num_bytes.isdigit():
+                print("Offset and bytes must be integers.")
+                continue
             request = gfs_pb2.ReadRequest(
                 file_path=file_path,
                 offset=int(offset),
@@ -65,7 +66,7 @@ Available commands:
             )
             response = stub.ReadFromFile(request)
             print("Data read:")
-            print(response.data)
+            print(response.data.decode())
         elif command == 'list':
             if len(args) != 2:
                 print("Usage: list <directory_path>")
@@ -88,7 +89,6 @@ Available commands:
             break
         else:
             print("Unknown command. Type 'help' for a list of commands.")
-
 
 if __name__ == '__main__':
     interactive_client()

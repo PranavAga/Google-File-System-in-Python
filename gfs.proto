@@ -4,19 +4,32 @@ package gfs;
 
 message Empty {}
 
-message String {
-  string st = 1;
+message StringRequest {
+  string message = 1;
+}
+
+message StringResponse {
+  string message = 1;
+}
+
+message ReadRequest {
+  string file_path = 1;
+  int64 offset = 2;
+  int64 num_bytes = 3;
+}
+
+message ReadResponse {
+  bytes data = 1;
 }
 
 message HeartbeatRequest {
   string chunkserver_id = 1;
-  repeated string chunks = 2;
-  repeated int64 versions = 3;
+  repeated string chunk_handle_list = 2;
 }
 
 message HeartbeatResponse {
   bool success = 1;
-  repeated string invalid_chunks = 2;
+  repeated string invalid_chunk_handles = 2;
 }
 
 message ChunkData {
@@ -25,59 +38,23 @@ message ChunkData {
   int64 version = 3;
 }
 
-message ChunkHandleAndVersion {
-  string chunk_handle = 1;
-  int64 version = 2;
-}
-
-message MutationRequest {
-  string chunk_handle = 1;
-  int64 version = 2;
-  bytes data = 3;
-  int64 offset = 4;
-}
-
-message MutationResponse {
-  bool success = 1;
-  string message = 2;
-}
-
-message ReadRequest {
-  string file_path = 1;
-  int64 offset = 2;
-  int64 length = 3;
-}
-
-message ReadResponse {
-  bytes data = 1;
-  string message = 2;
-}
-
-message ChunkLocations {
-  string chunk_handle = 1;
-  int64 version = 2;
-  string primary = 3;
-  repeated string replicas = 4;
-}
-
 service MasterServer {
   // Client to Master RPCs
-  rpc ListFiles(String) returns (String);
-  rpc CreateFile(String) returns (String);
-  rpc AppendToFile(String) returns (ChunkLocations);
-  rpc ReadFromFile(ReadRequest) returns (ChunkLocations);
-  rpc DeleteFile(String) returns (String);
+  rpc ListFiles(StringRequest) returns (StringResponse);
+  rpc CreateFile(StringRequest) returns (StringResponse);
+  rpc AppendToFile(StringRequest) returns (StringResponse);
+  rpc ReadFromFile(ReadRequest) returns (ReadResponse);
+  rpc DeleteFile(StringRequest) returns (StringResponse);
 
   // Chunkserver to Master RPCs
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
-  rpc ReportChunk(ChunkHandleAndVersion) returns (Empty);
 }
 
 service ChunkServer {
   // Client to Chunkserver RPCs
-  rpc WriteChunk(MutationRequest) returns (MutationResponse);
-  rpc ReadChunk(MutationRequest) returns (ChunkData);
+  rpc PushChunk(ChunkData) returns (StringResponse);
+  rpc ReadChunk(StringRequest) returns (ChunkData);
 
   // Chunkserver to Chunkserver RPCs
-  rpc ApplyMutation(MutationRequest) returns (MutationResponse);
+  rpc ReplicateChunk(ChunkData) returns (StringResponse);
 }

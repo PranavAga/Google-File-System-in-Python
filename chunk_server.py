@@ -1,98 +1,84 @@
-import grpc
-from concurrent import futures
 import threading
 import time
 import os
 import sys
+from concurrent import futures
 
+import grpc
 import gfs_pb2
 import gfs_pb2_grpc
 
-from common import Config as cfg
-from common import Status
+from common import Config
 
-class ChunkServerServicer(gfs_pb2_grpc.ChunkServerServicer):
+class ChunkServer(gfs_pb2_grpc.ChunkServerServicer):
     def __init__(self, port):
         self.port = port
-        self.server_id = port
+        self.chunkserver_id = port
         self.chunks = {}  # Map chunk_handle to (data, version)
-        self.chunk_lock = threading.Lock()
-        self.root_dir = os.path.join(cfg.chunkserver_root, self.server_id)
+        self.chunks_lock = threading.Lock()
+        self.root_dir = os.path.join(Config.chunkserver_root, self.chunkserver_id)
         os.makedirs(self.root_dir, exist_ok=True)
-
-        # Connect to master
-        self.connect_to_master()
-        self.start_heartbeat()
-
-    def connect_to_master(self):
-        self.master_channel = grpc.insecure_channel(f'localhost:{cfg.master_loc}')
+        # Connect to master server
+        self.master_channel = grpc.insecure_channel(f'localhost:{Config.master_port}')
         self.master_stub = gfs_pb2_grpc.MasterServerStub(self.master_channel)
+        # Start heartbeat thread
+        threading.Thread(target=self.send_heartbeats, daemon=True).start()
 
-    def start_heartbeat(self):
-        threading.Thread(target=self.send_heartbeat, daemon=True).start()
-
-    def send_heartbeat(self):
+    def send_heartbeats(self):
         while True:
+            with self.chunks_lock:
+                chunk_handle_list = list(self.chunks.keys())
             try:
-                with self.chunk_lock:
-                    chunk_list = list(self.chunks.keys())
                 request = gfs_pb2.HeartbeatRequest(
-                    chunkserver_id=self.server_id,
-                    chunks=chunk_list
+                    chunkserver_id=self.chunkserver_id,
+                    chunk_handle_list=chunk_handle_list
                 )
                 response = self.master_stub.Heartbeat(request)
                 if response.success:
-                    print(f"[{self.server_id}] Heartbeat sent successfully")
-                else:
-                    print(f"[{self.server_id}] Heartbeat failed")
+                    print(f"Heartbeat sent successfully from chunkserver {self.chunkserver_id}.")
             except Exception as e:
-                print(f"[{self.server_id}] Error sending heartbeat: {e}")
-            time.sleep(cfg.heartbeat_interval)
+                print(f"Failed to send heartbeat: {e}")
+            time.sleep(Config.heartbeat_interval)
 
-    def PushData(self, request, context):
+    def PushChunk(self, request, context):
         chunk_handle = request.chunk_handle
         data = request.data
         version = request.version
-
-        with self.chunk_lock:
-            # Update chunk data and version
+        with self.chunks_lock:
             self.chunks[chunk_handle] = (data, version)
-            # Save data to disk
+            # Write data to file
             chunk_path = os.path.join(self.root_dir, chunk_handle)
             with open(chunk_path, 'wb') as f:
                 f.write(data)
-            print(f"[{self.server_id}] Received data for chunk {chunk_handle}")
+            print(f"Chunk {chunk_handle} stored at chunkserver {self.chunkserver_id}.")
         return gfs_pb2.StringResponse(message="SUCCESS")
 
-    def ReadData(self, request, context):
-        chunk_handle = request.chunk_handle
-        with self.chunk_lock:
-            if chunk_handle not in self.chunks:
+    def ReadChunk(self, request, context):
+        chunk_handle = request.message
+        with self.chunks_lock:
+            if chunk_handle in self.chunks:
+                data, version = self.chunks[chunk_handle]
+                print(f"Chunk {chunk_handle} read from chunkserver {self.chunkserver_id}.")
                 return gfs_pb2.ChunkData(
                     chunk_handle=chunk_handle,
-                    data=b'',
-                    version=0
+                    data=data,
+                    version=version
                 )
-            data, version = self.chunks[chunk_handle]
-            print(f"[{self.server_id}] Reading data for chunk {chunk_handle}")
-        return gfs_pb2.ChunkData(
-            chunk_handle=chunk_handle,
-            data=data,
-            version=version
-        )
+            else:
+                print(f"Chunk {chunk_handle} not found at chunkserver {self.chunkserver_id}.")
+                return gfs_pb2.ChunkData(chunk_handle=chunk_handle, data=b'', version=0)
 
     def ReplicateChunk(self, request, context):
         chunk_handle = request.chunk_handle
         data = request.data
         version = request.version
-
-        with self.chunk_lock:
-            # Save replicated data
+        with self.chunks_lock:
             self.chunks[chunk_handle] = (data, version)
+            # Write data to file
             chunk_path = os.path.join(self.root_dir, chunk_handle)
             with open(chunk_path, 'wb') as f:
                 f.write(data)
-            print(f"[{self.server_id}] Replicated chunk {chunk_handle}")
+            print(f"Chunk {chunk_handle} replicated at chunkserver {self.chunkserver_id}.")
         return gfs_pb2.StringResponse(message="REPLICATED")
 
 def serve():
@@ -100,19 +86,17 @@ def serve():
         print("Usage: python chunk_server.py <port>")
         sys.exit(1)
     port = sys.argv[1]
-
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    servicer = ChunkServerServicer(port)
-    gfs_pb2_grpc.add_ChunkServerServicer_to_server(servicer, server)
+    gfs_pb2_grpc.add_ChunkServerServicer_to_server(ChunkServer(port), server)
     server.add_insecure_port(f'[::]:{port}')
     server.start()
-    print(f"Chunk Server started on port {port}")
+    print(f"Chunkserver started on port {port}.")
     try:
         while True:
             time.sleep(86400)
     except KeyboardInterrupt:
+        print("Chunkserver stopping...")
         server.stop(0)
-        print("Chunk Server stopped")
 
 if __name__ == '__main__':
     serve()
