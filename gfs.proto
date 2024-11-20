@@ -29,6 +29,7 @@ message ChunkHandle {
 message HeartbeatRequest {
   string chunkserver_id = 1;
   repeated string chunk_handles = 2;
+  float load = 3; // New field for server load
 }
 
 message HeartbeatResponse {
@@ -79,6 +80,16 @@ message LeaseResponse {
   int64 lease_expiration = 4;
 }
 
+message RoleUpdateRequest {
+  string chunk_handle = 1;
+  string role = 2; // 'primary' or 'secondary'
+}
+
+message RoleUpdateResponse {
+  bool success = 1;
+  string message = 2;
+}
+
 service MasterServer {
   rpc ListFiles(StringRequest) returns (StringResponse);
   rpc CreateFile(StringRequest) returns (StringResponse);
@@ -93,4 +104,5 @@ service ChunkServer {
   rpc WriteCommit(WriteCommitRequest) returns (WriteCommitResponse);
   rpc ReadChunk(ChunkHandle) returns (ReadResponse);
   rpc ReplicateChunk(WriteRequest) returns (WriteResponse);
+  rpc UpdateRole(RoleUpdateRequest) returns (RoleUpdateResponse); // New RPC for role updates
 }
