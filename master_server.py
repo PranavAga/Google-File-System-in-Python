@@ -1,301 +1,207 @@
 from concurrent import futures
+import threading
 import time
 from collections import OrderedDict
 import random
 import uuid
-import threading
 
 import grpc
 import gfs_pb2_grpc
 import gfs_pb2
 
 from common import Config as cfg
-from common import Status
+from common import Status, singleton
 
 
-def choose_primary_secondary(locs):
-    # Randomly select one primary and two secondary servers
-    total = len(locs)
-    servers = random.sample(locs, 3 if total >= 3 else total)
-    primary = servers[0]
-    secondaries = servers[1:] if len(servers) > 1 else []
-    return primary, secondaries
+class ChunkMetadata(object):
+    def __init__(self, chunk_handle, version):
+        self.chunk_handle = chunk_handle
+        self.version = version
+        self.locs = []  # List of chunkservers storing this chunk
+        self.primary = None  # Current primary chunkserver
+        self.lease_expiration = 0  # Lease expiration time
 
 
-class Chunk(object):
-    def __init__(self):
-        self.locs = []
-        self.primary = None
-        self.secondaries = []
-
-
-class File(object):
+class FileMetadata(object):
     def __init__(self, file_path):
         self.file_path = file_path
-        self.chunks = OrderedDict()
+        self.chunks = OrderedDict()  # Map chunk index to ChunkMetadata
         self.delete = False
+        self.version = 0  # For managing concurrent modifications
 
 
-class MetaData(object):
+@singleton
+class MasterMetadata(object):
     def __init__(self):
-        self.locs = cfg.chunkserver_locs
+        self.lock = threading.Lock()
+        self.files = {}  # Map file_path to FileMetadata
+        self.chunkserver_list = cfg.chunkserver_locs[:]  # List of active chunkservers
+        self.chunk_handle_map = {}  # Map chunk_handle to file_path and index
 
-        self.files = {}
-        self.ch2fp = {}
+        # Heartbeat management
+        self.chunkserver_heartbeat = {}  # Map chunkserver_id to last heartbeat time
 
-        self.locs_dict = {}
-        for cs in self.locs:
-            self.locs_dict[cs] = []
+    def generate_chunk_handle(self):
+        return str(uuid.uuid4())
 
-        # Sequential log for concurrent modifications
-        self.modification_log = []
+    def select_chunkservers(self):
+        return random.sample(self.chunkserver_list, cfg.replication_factor)
 
-    def get_latest_chunk(self, file_path):
-        latest_chunk_handle = list(self.files[file_path].chunks.keys())[-1]
-        return latest_chunk_handle
+    def assign_primary(self, chunk_md):
+        with self.lock:
+            # Assign primary to the chunk with a new lease
+            chunk_md.primary = random.choice(chunk_md.locs)
+            chunk_md.lease_expiration = time.time() + cfg.lease_time
 
-    def get_chunk_locs(self, chunk_handle):
-        file_path = self.ch2fp[chunk_handle]
-        return self.files[file_path].chunks[chunk_handle].locs
+    def check_lease(self, chunk_md):
+        return time.time() < chunk_md.lease_expiration
 
-    def create_new_file(self, file_path, chunk_handle):
-        if file_path in self.files:
-            return Status(-1, "ERROR: File exists already: {}".format(file_path))
-        fl = File(file_path)
-        self.files[file_path] = fl
-        status = self.create_new_chunk(file_path, -1, chunk_handle)
-        return status
+    def update_heartbeat(self, chunkserver_id):
+        with self.lock:
+            self.chunkserver_heartbeat[chunkserver_id] = time.time()
 
-    def create_new_chunk(self, file_path, prev_chunk_handle, chunk_handle):
-        if file_path not in self.files:
-            return Status(-2, "ERROR: New chunk file doesn't exist: {}".format(file_path))
-
-        latest_chunk = None
-        if prev_chunk_handle != -1:
-            latest_chunk = self.get_latest_chunk(file_path)
-
-        # Already created
-        if prev_chunk_handle != -1 and latest_chunk != prev_chunk_handle:
-            return Status(-3, "ERROR: New chunk already created: {} : {}".format(file_path, chunk_handle))
-
-        chunk = Chunk()
-        self.files[file_path].chunks[chunk_handle] = chunk
-
-        # Dynamic role assignment
-        locs = self.locs.copy()
-        primary, secondaries = choose_primary_secondary(locs)
-        chunk.primary = primary
-        chunk.secondaries = secondaries
-
-        # Assign locations to chunk
-        chunk.locs = locs
-
-        for loc in locs:
-            self.locs_dict[loc].append(chunk_handle)
-
-        # Map chunk handle to file path
-        self.ch2fp[chunk_handle] = file_path
-
-        return Status(0, "New Chunk Created")
-
-    def mark_delete(self, file_path):
-        self.files[file_path].delete = True
-
-    def append_modification_log(self, entry):
-        self.modification_log.append(entry)
-        # Here you can add code to persist the log if needed
+    def detect_chunkserver_failure(self):
+        with self.lock:
+            current_time = time.time()
+            failed_servers = []
+            for cs_id, last_beat in self.chunkserver_heartbeat.items():
+                if current_time - last_beat > cfg.heartbeat_interval * 2:
+                    failed_servers.append(cs_id)
+            return failed_servers
 
 
-class MasterServer(object):
+class MasterServer(gfs_pb2_grpc.MasterServerServicer):
     def __init__(self):
-        self.meta = MetaData()
+        self.meta = MasterMetadata()
+        self.failure_detection_thread = threading.Thread(target=self.monitor_chunkservers)
+        self.failure_detection_thread.daemon = True
+        self.failure_detection_thread.start()
 
-    def get_chunk_handle(self):
-        return str(uuid.uuid1())
+    def monitor_chunkservers(self):
+        while True:
+            failed_servers = self.meta.detect_chunkserver_failure()
+            if failed_servers:
+                for cs_id in failed_servers:
+                    print(f"Chunkserver {cs_id} failed")
+                    self.handle_chunkserver_failure(cs_id)
+            time.sleep(cfg.heartbeat_interval)
 
-    def check_valid_file(self, file_path):
-        if file_path not in self.meta.files:
-            return Status(-1, "ERROR: file {} doesn't exist".format(file_path))
-        elif self.meta.files[file_path].delete is True:
-            return Status(-1, "ERROR: file {} is deleted".format(file_path))
-        else:
-            return Status(0, "SUCCESS: file {} exists and not deleted".format(file_path))
+    def handle_chunkserver_failure(self, chunkserver_id):
+        with self.meta.lock:
+            # Remove chunkserver from active list
+            if chunkserver_id in self.meta.chunkserver_list:
+                self.meta.chunkserver_list.remove(chunkserver_id)
+            # Remove heartbeat entry
+            if chunkserver_id in self.meta.chunkserver_heartbeat:
+                del self.meta.chunkserver_heartbeat[chunkserver_id]
+            # Update chunk replicas
+            for file_md in self.meta.files.values():
+                for chunk_md in file_md.chunks.values():
+                    if chunkserver_id in chunk_md.locs:
+                        chunk_md.locs.remove(chunkserver_id)
+                        if chunk_md.primary == chunkserver_id:
+                            chunk_md.primary = None
+                        # Trigger replication to maintain replication factor
+                        self.replicate_chunk(chunk_md)
 
-    def list_files(self, file_path):
-        file_list = []
-        for fp in self.meta.files.keys():
-            if fp.startswith(file_path):
-                file_list.append(fp)
-        return file_list
+    def replicate_chunk(self, chunk_md):
+        # Logic to replicate chunk to maintain replication factor
+        missing_replicas = cfg.replication_factor - len(chunk_md.locs)
+        if missing_replicas > 0:
+            available_servers = list(set(self.meta.chunkserver_list) - set(chunk_md.locs))
+            if available_servers:
+                new_locations = random.sample(available_servers, min(missing_replicas, len(available_servers)))
+                chunk_md.locs.extend(new_locations)
+                # Initiate replication to new chunkservers
+                for cs_id in new_locations:
+                    # Assuming we have a method to send replication requests
+                    threading.Thread(target=self.send_replicate_request, args=(chunk_md, cs_id)).start()
 
-    def create_file(self, file_path):
-        chunk_handle = self.get_chunk_handle()
-        status = self.meta.create_new_file(file_path, chunk_handle)
-
-        if status.v != 0:
-            return None, None, None, None, status
-
-        chunk = self.meta.files[file_path].chunks[chunk_handle]
-        primary = chunk.primary
-        secondaries = chunk.secondaries
-
-        # Record creation in modification log
-        self.meta.append_modification_log(f"CREATE_FILE {file_path} {chunk_handle}")
-
-        return chunk_handle, primary, secondaries, chunk.locs, status
-
-    def append_file(self, file_path):
-        status = self.check_valid_file(file_path)
-        if status.v != 0:
-            return None, None, None, None, status
-
-        latest_chunk_handle = self.meta.get_latest_chunk(file_path)
-        chunk = self.meta.files[file_path].chunks[latest_chunk_handle]
-        primary = chunk.primary
-        secondaries = chunk.secondaries
-        locs = chunk.locs
-
-        return latest_chunk_handle, primary, secondaries, locs, status
-
-    def create_chunk(self, file_path, prev_chunk_handle):
-        chunk_handle = self.get_chunk_handle()
-        status = self.meta.create_new_chunk(file_path, prev_chunk_handle, chunk_handle)
-        chunk = self.meta.files[file_path].chunks[chunk_handle]
-        primary = chunk.primary
-        secondaries = chunk.secondaries
-        locs = chunk.locs
-
-        # Record chunk creation in modification log
-        self.meta.append_modification_log(f"CREATE_CHUNK {file_path} {chunk_handle}")
-
-        return chunk_handle, primary, secondaries, locs, status
-
-    def read_file(self, file_path, offset, numbytes):
-        status = self.check_valid_file(file_path)
-        if status.v != 0:
-            return status
-
-        chunk_size = cfg.chunk_size
-        start_chunk = offset // chunk_size
-        all_chunks = list(self.meta.files[file_path].chunks.keys())
-        if start_chunk >= len(all_chunks):
-            return Status(-1, "ERROR: Offset is too large")
-
-        start_offset = offset % chunk_size
-
-        if numbytes == -1:
-            end_offset = chunk_size - 1
-            end_chunk = len(all_chunks) - 1
-        else:
-            end_byte = offset + numbytes - 1
-            end_chunk = end_byte // chunk_size
-            end_offset = end_byte % chunk_size
-
-        all_chunk_handles = all_chunks[start_chunk:end_chunk + 1]
-        ret = []
-        for idx, chunk_handle in enumerate(all_chunk_handles):
-            if idx == 0:
-                stof = start_offset
-            else:
-                stof = 0
-            if idx == len(all_chunk_handles) - 1:
-                enof = end_offset
-            else:
-                enof = chunk_size - 1
-
-            chunk = self.meta.files[file_path].chunks[chunk_handle]
-
-            # Prefer primary for reads, fallback to any loc
-            loc = chunk.primary if chunk.primary else chunk.locs[0]
-            ret.append(chunk_handle + "*" + loc + "*" + str(stof) + "*" + str(enof - stof + 1))
-        ret = "|".join(ret)
-        return Status(0, ret)
-
-    def delete_file(self, file_path):
-        status = self.check_valid_file(file_path)
-        if status.v != 0:
-            return status
-
+    def send_replicate_request(self, chunk_md, chunkserver_id):
         try:
-            self.meta.mark_delete(file_path)
-
-            # Record deletion in modification log
-            self.meta.append_modification_log(f"DELETE_FILE {file_path}")
-
+            channel = grpc.insecure_channel(f'localhost:{chunkserver_id}')
+            stub = gfs_pb2_grpc.ChunkServerStub(channel)
+            chunk_data = gfs_pb2.ChunkData(chunk_handle=chunk_md.chunk_handle, version=chunk_md.version)
+            response = stub.ReplicateChunk(chunk_data)
+            print(f"Replication to chunkserver {chunkserver_id} successful: {response.st}")
         except Exception as e:
-            return Status(-1, "ERROR: " + str(e))
-        else:
-            return Status(0, "SUCCESS: file {} is marked deleted".format(file_path))
+            print(f"Replication to chunkserver {chunkserver_id} failed: {e}")
 
-
-class MasterServerToClientServicer(gfs_pb2_grpc.MasterServerToClientServicer):
-    def __init__(self, master):
-        self.master = master
-
+    # Client RPC implementations
     def ListFiles(self, request, context):
-        file_path = request.st
-        print("Command List {}".format(file_path))
-        fpls = self.master.list_files(file_path)
-        st = "|".join(fpls)
-        return gfs_pb2.String(st=st)
+        # Implementation similar to previous code
+        pass
 
     def CreateFile(self, request, context):
         file_path = request.st
-        print("Command Create {}".format(file_path))
-        chunk_handle, primary, secondaries, locs, status = self.master.create_file(file_path)
+        print(f"CreateFile called for {file_path}")
+        with self.meta.lock:
+            if file_path in self.meta.files:
+                return gfs_pb2.String(st="ERROR: File already exists")
+            file_md = FileMetadata(file_path)
+            self.meta.files[file_path] = file_md
+            # Create initial chunk
+            chunk_handle = self.meta.generate_chunk_handle()
+            chunk_md = ChunkMetadata(chunk_handle, version=1)
+            chunk_md.locs = self.meta.select_chunkservers()
+            self.meta.assign_primary(chunk_md)
+            file_md.chunks[0] = chunk_md
+            self.meta.chunk_handle_map[chunk_handle] = (file_path, 0)
+            # Instruct chunkservers to create the chunk
+            self.create_chunk_on_servers(chunk_handle, chunk_md.locs)
+            return gfs_pb2.String(st="SUCCESS")
 
-        if status.v != 0:
-            return gfs_pb2.String(st=status.e)
+    def create_chunk_on_servers(self, chunk_handle, chunkservers):
+        for cs_id in chunkservers:
+            try:
+                channel = grpc.insecure_channel(f'localhost:{cs_id}')
+                stub = gfs_pb2_grpc.ChunkServerStub(channel)
+                chunk_data = gfs_pb2.ChunkData(chunk_handle=chunk_handle, data=b'', version=1)
+                response = stub.PushData(chunk_data)
+                print(f"Chunk {chunk_handle} created on chunkserver {cs_id}: {response.st}")
+            except Exception as e:
+                print(f"Failed to create chunk {chunk_handle} on chunkserver {cs_id}: {e}")
 
-        # Return chunk information including primary and secondary roles
-        st = chunk_handle + "|" + primary + "|" + "|".join(secondaries) + "|" + "|".join(locs)
-        return gfs_pb2.String(st=st)
+    def AppendToFile(self, request, context):
+        # Implementation of two-phase commit protocol
+        pass
 
-    def AppendFile(self, request, context):
-        file_path = request.st
-        print("Command Append {}".format(file_path))
-        latest_chunk_handle, primary, secondaries, locs, status = self.master.append_file(file_path)
-
-        if status.v != 0:
-            return gfs_pb2.String(st=status.e)
-
-        st = latest_chunk_handle + "|" + primary + "|" + "|".join(secondaries) + "|" + "|".join(locs)
-        return gfs_pb2.String(st=st)
-
-    def CreateChunk(self, request, context):
-        file_path, prev_chunk_handle = request.st.split("|")
-        print("Command CreateChunk {} {}".format(file_path, prev_chunk_handle))
-        chunk_handle, primary, secondaries, locs, status = self.master.create_chunk(file_path, prev_chunk_handle)
-        st = chunk_handle + "|" + primary + "|" + "|".join(secondaries) + "|" + "|".join(locs)
-        return gfs_pb2.String(st=st)
-
-    def ReadFile(self, request, context):
-        file_path, offset, numbytes = request.st.split("|")
-        print("Command ReadFile {} {} {}".format(file_path, offset, numbytes))
-        status = self.master.read_file(file_path, int(offset), int(numbytes))
-        return gfs_pb2.String(st=status.e)
+    def ReadFromFile(self, request, context):
+        # Implementation for reading data from chunks
+        pass
 
     def DeleteFile(self, request, context):
-        file_path = request.st
-        print("Command Delete {}".format(file_path))
-        status = self.master.delete_file(file_path)
-        return gfs_pb2.String(st=status.e)
+        # Mark the file as deleted
+        pass
 
+    def UndeleteFile(self, request, context):
+        # Restore previously deleted file
+        pass
+
+    # Chunkserver RPC implementations
+    def Heartbeat(self, request, context):
+        chunkserver_id = request.chunkserver_id
+        print(f"Heartbeat received from Chunkserver {chunkserver_id}")
+        self.meta.update_heartbeat(chunkserver_id)
+        # Return any invalid chunks (e.g., due to version mismatch)
+        invalid_chunks = []  # Placeholder
+        return gfs_pb2.HeartbeatResponse(success=True, invalid_chunks=invalid_chunks)
+
+    def ReportChunk(self, request, context):
+        # Handle chunk report from chunkservers
+        pass
 
 def serve():
-    master = MasterServer()
-
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    gfs_pb2_grpc.add_MasterServerToClientServicer_to_server(
-        MasterServerToClientServicer(master=master), server)
-    server.add_insecure_port('[::]:50051')
+    gfs_pb2_grpc.add_MasterServerServicer_to_server(MasterServer(), server)
+    server.add_insecure_port('[::]:{}'.format(cfg.master_loc))
     server.start()
+    print(f"Master server started on port {cfg.master_loc}")
     try:
         while True:
-            time.sleep(2000)
+            time.sleep(86400)
     except KeyboardInterrupt:
         server.stop(0)
-
 
 if __name__ == "__main__":
     serve()

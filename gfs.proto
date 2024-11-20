@@ -2,25 +2,47 @@ syntax = "proto3";
 
 package gfs;
 
-// The message used for sending strings between client and servers
+message Empty {}
+
 message String {
   string st = 1;
 }
 
-// Service definition for communication between Master Server and Client
-service MasterServerToClient {
-  rpc ListFiles(String) returns (String);
-  rpc CreateFile(String) returns (String);
-  rpc AppendFile(String) returns (String);
-  rpc CreateChunk(String) returns (String);
-  rpc ReadFile(String) returns (String);
-  rpc DeleteFile(String) returns (String);
+message HeartbeatRequest {
+  string chunkserver_id = 1;
+  repeated string chunks = 2;
 }
 
-// Service definition for communication between Chunk Server and Client
-service ChunkServerToClient {
-  rpc Create(String) returns (String);
-  rpc GetChunkSpace(String) returns (String);
-  rpc Append(String) returns (String);
-  rpc Read(String) returns (String);
+message HeartbeatResponse {
+  bool success = 1;
+  repeated string invalid_chunks = 2;
+}
+
+message ChunkData {
+  string chunk_handle = 1;
+  bytes data = 2;
+  int64 version = 3;
+}
+
+service MasterServer {
+  // Client to Master RPCs
+  rpc ListFiles(String) returns (String);
+  rpc CreateFile(String) returns (String);
+  rpc AppendToFile(String) returns (String);
+  rpc ReadFromFile(String) returns (String);
+  rpc DeleteFile(String) returns (String);
+  rpc UndeleteFile(String) returns (String);
+
+  // Chunkserver to Master RPCs
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc ReportChunk(String) returns (Empty);
+}
+
+service ChunkServer {
+  // Client to Chunkserver RPCs
+  rpc PushData(ChunkData) returns (String);
+  rpc ReadData(String) returns (ChunkData);
+
+  // Chunkserver to Chunkserver RPCs
+  rpc ReplicateChunk(ChunkData) returns (String);
 }
