@@ -179,3 +179,7 @@ dmypy.json
 cython_debug/
 
 # End of https://mrkandreev.name/snippets/gitignore-generator/#Linux,macOS,Python
+
+gfs_pb2_grpc.py
+gfs_pb2.py
+root_chunkserver/
