@@ -114,7 +114,7 @@ gfs_project/
    Run the following command to start all chunk servers. Each chunk server runs on a different port specified in `Config.chunkserver_locs`.
 
    ```bash
-   python chunk_server.py
+   python chunk_server.py <port_number>
    ```
 
    *Note*: Ensure that the ports specified in `cfg.chunkserver_locs` are available.

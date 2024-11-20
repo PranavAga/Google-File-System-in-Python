@@ -3,6 +3,7 @@ import time
 from collections import OrderedDict
 import random
 import uuid
+import threading
 
 import grpc
 import gfs_pb2_grpc
@@ -12,19 +13,20 @@ from common import Config as cfg
 from common import Status
 
 
-def choose_locs():
-    total = len(cfg.chunkserver_locs)
-    st = random.randint(0, total - 1)
-    return [
-        cfg.chunkserver_locs[st],
-        cfg.chunkserver_locs[(st + 1) % total],
-        cfg.chunkserver_locs[(st + 2) % total],
-    ]
+def choose_primary_secondary(locs):
+    # Randomly select one primary and two secondary servers
+    total = len(locs)
+    servers = random.sample(locs, 3 if total >= 3 else total)
+    primary = servers[0]
+    secondaries = servers[1:] if len(servers) > 1 else []
+    return primary, secondaries
 
 
 class Chunk(object):
     def __init__(self):
         self.locs = []
+        self.primary = None
+        self.secondaries = []
 
 
 class File(object):
@@ -45,7 +47,8 @@ class MetaData(object):
         for cs in self.locs:
             self.locs_dict[cs] = []
 
-        self.to_delete = set()
+        # Sequential log for concurrent modifications
+        self.modification_log = []
 
     def get_latest_chunk(self, file_path):
         latest_chunk_handle = list(self.files[file_path].chunks.keys())[-1]
@@ -77,21 +80,30 @@ class MetaData(object):
 
         chunk = Chunk()
         self.files[file_path].chunks[chunk_handle] = chunk
-        locs = choose_locs()
+
+        # Dynamic role assignment
+        locs = self.locs.copy()
+        primary, secondaries = choose_primary_secondary(locs)
+        chunk.primary = primary
+        chunk.secondaries = secondaries
+
+        # Assign locations to chunk
+        chunk.locs = locs
+
         for loc in locs:
             self.locs_dict[loc].append(chunk_handle)
-            self.files[file_path].chunks[chunk_handle].locs.append(loc)
 
+        # Map chunk handle to file path
         self.ch2fp[chunk_handle] = file_path
+
         return Status(0, "New Chunk Created")
 
     def mark_delete(self, file_path):
         self.files[file_path].delete = True
-        self.to_delete.add(file_path)
 
-    def unmark_delete(self, file_path):
-        self.files[file_path].delete = False
-        self.to_delete.remove(file_path)
+    def append_modification_log(self, entry):
+        self.modification_log.append(entry)
+        # Here you can add code to persist the log if needed
 
 
 class MasterServer(object):
@@ -105,7 +117,7 @@ class MasterServer(object):
         if file_path not in self.meta.files:
             return Status(-1, "ERROR: file {} doesn't exist".format(file_path))
         elif self.meta.files[file_path].delete is True:
-            return Status(-1, "ERROR: file {} is already deleted".format(file_path))
+            return Status(-1, "ERROR: file {} is deleted".format(file_path))
         else:
             return Status(0, "SUCCESS: file {} exists and not deleted".format(file_path))
 
@@ -121,26 +133,42 @@ class MasterServer(object):
         status = self.meta.create_new_file(file_path, chunk_handle)
 
         if status.v != 0:
-            return None, None, status
+            return None, None, None, None, status
 
-        locs = self.meta.files[file_path].chunks[chunk_handle].locs
-        return chunk_handle, locs, status
+        chunk = self.meta.files[file_path].chunks[chunk_handle]
+        primary = chunk.primary
+        secondaries = chunk.secondaries
+
+        # Record creation in modification log
+        self.meta.append_modification_log(f"CREATE_FILE {file_path} {chunk_handle}")
+
+        return chunk_handle, primary, secondaries, chunk.locs, status
 
     def append_file(self, file_path):
         status = self.check_valid_file(file_path)
         if status.v != 0:
-            return None, None, status
+            return None, None, None, None, status
 
         latest_chunk_handle = self.meta.get_latest_chunk(file_path)
-        locs = self.meta.get_chunk_locs(latest_chunk_handle)
-        status = Status(0, "Append handled")
-        return latest_chunk_handle, locs, status
+        chunk = self.meta.files[file_path].chunks[latest_chunk_handle]
+        primary = chunk.primary
+        secondaries = chunk.secondaries
+        locs = chunk.locs
+
+        return latest_chunk_handle, primary, secondaries, locs, status
 
     def create_chunk(self, file_path, prev_chunk_handle):
         chunk_handle = self.get_chunk_handle()
         status = self.meta.create_new_chunk(file_path, prev_chunk_handle, chunk_handle)
-        locs = self.meta.files[file_path].chunks[chunk_handle].locs
-        return chunk_handle, locs, status
+        chunk = self.meta.files[file_path].chunks[chunk_handle]
+        primary = chunk.primary
+        secondaries = chunk.secondaries
+        locs = chunk.locs
+
+        # Record chunk creation in modification log
+        self.meta.append_modification_log(f"CREATE_CHUNK {file_path} {chunk_handle}")
+
+        return chunk_handle, primary, secondaries, locs, status
 
     def read_file(self, file_path, offset, numbytes):
         status = self.check_valid_file(file_path)
@@ -174,7 +202,11 @@ class MasterServer(object):
                 enof = end_offset
             else:
                 enof = chunk_size - 1
-            loc = self.meta.files[file_path].chunks[chunk_handle].locs[0]
+
+            chunk = self.meta.files[file_path].chunks[chunk_handle]
+
+            # Prefer primary for reads, fallback to any loc
+            loc = chunk.primary if chunk.primary else chunk.locs[0]
             ret.append(chunk_handle + "*" + loc + "*" + str(stof) + "*" + str(enof - stof + 1))
         ret = "|".join(ret)
         return Status(0, ret)
@@ -186,23 +218,14 @@ class MasterServer(object):
 
         try:
             self.meta.mark_delete(file_path)
+
+            # Record deletion in modification log
+            self.meta.append_modification_log(f"DELETE_FILE {file_path}")
+
         except Exception as e:
             return Status(-1, "ERROR: " + str(e))
         else:
             return Status(0, "SUCCESS: file {} is marked deleted".format(file_path))
-
-    def undelete_file(self, file_path):
-        if file_path not in self.meta.files:
-            return Status(-1, "ERROR: file {} doesn't exist, already garbage collected or never created".format(file_path))
-        elif self.meta.files[file_path].delete is not True:
-            return Status(-1, "ERROR: file {} is not marked deleted".format(file_path))
-
-        try:
-            self.meta.unmark_delete(file_path)
-        except Exception as e:
-            return Status(-1, "ERROR: " + str(e))
-        else:
-            return Status(0, "SUCCESS: file {} is restored".format(file_path))
 
 
 class MasterServerToClientServicer(gfs_pb2_grpc.MasterServerToClientServicer):
@@ -219,30 +242,31 @@ class MasterServerToClientServicer(gfs_pb2_grpc.MasterServerToClientServicer):
     def CreateFile(self, request, context):
         file_path = request.st
         print("Command Create {}".format(file_path))
-        chunk_handle, locs, status = self.master.create_file(file_path)
+        chunk_handle, primary, secondaries, locs, status = self.master.create_file(file_path)
 
         if status.v != 0:
             return gfs_pb2.String(st=status.e)
 
-        st = chunk_handle + "|" + "|".join(locs)
+        # Return chunk information including primary and secondary roles
+        st = chunk_handle + "|" + primary + "|" + "|".join(secondaries) + "|" + "|".join(locs)
         return gfs_pb2.String(st=st)
 
     def AppendFile(self, request, context):
         file_path = request.st
         print("Command Append {}".format(file_path))
-        latest_chunk_handle, locs, status = self.master.append_file(file_path)
+        latest_chunk_handle, primary, secondaries, locs, status = self.master.append_file(file_path)
 
         if status.v != 0:
             return gfs_pb2.String(st=status.e)
 
-        st = latest_chunk_handle + "|" + "|".join(locs)
+        st = latest_chunk_handle + "|" + primary + "|" + "|".join(secondaries) + "|" + "|".join(locs)
         return gfs_pb2.String(st=st)
 
     def CreateChunk(self, request, context):
         file_path, prev_chunk_handle = request.st.split("|")
         print("Command CreateChunk {} {}".format(file_path, prev_chunk_handle))
-        chunk_handle, locs, status = self.master.create_chunk(file_path, prev_chunk_handle)
-        st = chunk_handle + "|" + "|".join(locs)
+        chunk_handle, primary, secondaries, locs, status = self.master.create_chunk(file_path, prev_chunk_handle)
+        st = chunk_handle + "|" + primary + "|" + "|".join(secondaries) + "|" + "|".join(locs)
         return gfs_pb2.String(st=st)
 
     def ReadFile(self, request, context):
@@ -257,18 +281,13 @@ class MasterServerToClientServicer(gfs_pb2_grpc.MasterServerToClientServicer):
         status = self.master.delete_file(file_path)
         return gfs_pb2.String(st=status.e)
 
-    def UndeleteFile(self, request, context):
-        file_path = request.st
-        print("Command Undelete {}".format(file_path))
-        status = self.master.undelete_file(file_path)
-        return gfs_pb2.String(st=status.e)
-
 
 def serve():
     master = MasterServer()
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=3))
-    gfs_pb2_grpc.add_MasterServerToClientServicer_to_server(MasterServerToClientServicer(master=master), server)
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    gfs_pb2_grpc.add_MasterServerToClientServicer_to_server(
+        MasterServerToClientServicer(master=master), server)
     server.add_insecure_port('[::]:50051')
     server.start()
     try:
