@@ -6,17 +6,11 @@ class Config:
     chunkserver_ports = ['50052', '50053', '50054', '50055', '50056']
     chunkserver_root = 'root_chunkserver'
     replication_factor = 3
-    heartbeat_interval = 5  # in seconds
-    lease_duration = 60  # in seconds
+    heartbeat_interval = 5  # seconds
+    lease_duration = 60  # seconds
+    max_chunkserver_failures = 2  # for consensus algorithms
 
-def is_integer(value):
-    try:
-        int(value)
-        return True
-    except ValueError:
-        return False
-
-# Thread-safe singleton decorator for the master server
+# Thread-safe singleton decorator
 def singleton(cls):
     instances = {}
     lock = threading.Lock()

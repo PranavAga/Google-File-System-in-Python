@@ -5,56 +5,98 @@ package gfs;
 message Empty {}
 
 message StringRequest {
-  string message = 1;
+  string value = 1;
 }
 
 message StringResponse {
-  string message = 1;
+  string value = 1;
 }
 
 message ReadRequest {
   string file_path = 1;
   int64 offset = 2;
-  int64 num_bytes = 3;
+  int64 length = 3;
 }
 
 message ReadResponse {
   bytes data = 1;
 }
 
+message ChunkHandle {
+  string handle = 1;
+}
+
+message ChunkMetadata {
+  string chunk_handle = 1;
+  int64 version = 2;
+  repeated string locations = 3;
+}
+
 message HeartbeatRequest {
   string chunkserver_id = 1;
-  repeated string chunk_handle_list = 2;
+  repeated ChunkMetadata chunks = 2;
 }
 
 message HeartbeatResponse {
   bool success = 1;
-  repeated string invalid_chunk_handles = 2;
+  repeated ChunkHandle invalid_chunks = 2;
 }
 
-message ChunkData {
-  string chunk_handle = 1;
+message AppendRequest {
+  string file_path = 1;
   bytes data = 2;
-  int64 version = 3;
+}
+
+message AppendResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message WriteRequest {
+  string chunk_handle = 1;
+  int64 version = 2;
+  bytes data = 3;
+}
+
+message WriteResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message WriteCommitRequest {
+  string chunk_handle = 1;
+  int64 version = 2;
+}
+
+message WriteCommitResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message LeaseRequest {
+  string chunk_handle = 1;
+}
+
+message LeaseResponse {
+  bool success = 1;
+  string primary = 2;
+  repeated string secondaries = 3;
+  int64 lease_expiration = 4;
 }
 
 service MasterServer {
-  // Client to Master RPCs
   rpc ListFiles(StringRequest) returns (StringResponse);
   rpc CreateFile(StringRequest) returns (StringResponse);
-  rpc AppendToFile(StringRequest) returns (StringResponse);
+  rpc AppendToFile(AppendRequest) returns (AppendResponse);
   rpc ReadFromFile(ReadRequest) returns (ReadResponse);
   rpc DeleteFile(StringRequest) returns (StringResponse);
-
-  // Chunkserver to Master RPCs
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc GetLeaseInfo(LeaseRequest) returns (LeaseResponse);
 }
 
 service ChunkServer {
-  // Client to Chunkserver RPCs
-  rpc PushChunk(ChunkData) returns (StringResponse);
-  rpc ReadChunk(StringRequest) returns (ChunkData);
-
-  // Chunkserver to Chunkserver RPCs
-  rpc ReplicateChunk(ChunkData) returns (StringResponse);
+  rpc WriteChunk(WriteRequest) returns (WriteResponse);
+  rpc WriteCommit(WriteCommitRequest) returns (WriteCommitResponse);
+  rpc ReadChunk(ChunkHandle) returns (ReadResponse);
+  rpc ReplicateChunk(WriteRequest) returns (WriteResponse);
 }
