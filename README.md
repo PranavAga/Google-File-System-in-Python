@@ -1,98 +1,207 @@
-Here's a README file for your Google File System implementation using Python and gRPC:
+## README
 
----
+### Google File System (GFS) Simplified Implementation
 
-# Google File System (GFS) Implementation in Python
+This project is a simplified implementation of the Google File System (GFS) using Python and gRPC. The system consists of a master server, multiple chunk servers, and a client to interact with the file system.
 
-This project is a simplified implementation of the Google File System (GFS) using Python and gRPC. It is designed to provide a basic understanding of how GFS operates, featuring a master server, multiple chunk servers, and an interactive client.
+### Table of Contents
 
-## Overview
+- [README](#readme)
+  - [Google File System (GFS) Simplified Implementation](#google-file-system-gfs-simplified-implementation)
+  - [Table of Contents](#table-of-contents)
+  - [Overview](#overview)
+  - [Directory Structure](#directory-structure)
+  - [Implementation Details](#implementation-details)
+  - [Prerequisites](#prerequisites)
+  - [Setup and Compilation](#setup-and-compilation)
+  - [Running the System](#running-the-system)
+  - [Client Usage](#client-usage)
+  - [Example Commands](#example-commands)
+  - [Notes](#notes)
 
-The Google File System is a scalable, distributed file system developed by Google to handle large data sets across many machines. This implementation captures the core concepts of GFS, including:
+### Overview
 
-- **Master Server**: Manages metadata and coordinates access to files.
-- **Chunk Servers**: Store file data in chunks and handle read/write operations.
-- **Client**: Provides an interactive interface for users to perform file operations.
+The system provides basic file system operations such as:
 
-## Features
+- **Create**: Create a new file in the system.
+- **List**: List files in a directory.
+- **Append**: Append data to a file.
+- **Read**: Read data from a file.
+- **Delete**: Mark a file as deleted.
+- **Undelete**: Restore a deleted file.
 
-- **File Operations**: Create, read, write, and delete files.
-- **Chunk Management**: Files are divided into fixed-size chunks for storage.
-- **Interactive Client**: Command-line interface for interacting with the file system.
+### Directory Structure
 
-## Architecture
+```
+gfs_project/
+├── client.py
+├── common.py
+├── master_server.py
+├── chunk_server.py
+├── gfs.proto
+├── gfs_pb2.py
+├── gfs_pb2_grpc.py
+└── root_chunkserver/
+    ├── 50052/
+    ├── 50053/
+    ├── 50054/
+    ├── 50055/
+    └── 50056/
+```
 
-1. **Master Server**: 
-   - Maintains metadata about files and chunks.
-   - Handles client requests for locating files and chunks.
-   - Distributes leases to chunk servers for write operations.
+- `client.py`: The client application to interact with the GFS.
+- `common.py`: Common configurations and utilities.
+- `master_server.py`: The master server managing metadata.
+- `chunk_server.py`: The chunk server storing file chunks.
+- `gfs.proto`: Protocol buffer definitions.
+- `gfs_pb2.py` and `gfs_pb2_grpc.py`: Generated files from `gfs.proto`.
+- `root_chunkserver/`: Directory where chunk servers store file chunks.
 
-2. **Chunk Server**:
-   - Stores file data in chunks.
-   - Communicates with the master and clients for data operations.
+### Implementation Details
 
-3. **Client**:
-   - Connects to the master server to locate chunks.
-   - Interacts with chunk servers to read and write data.
+- **Master Server**:
+  - Manages metadata about files and chunks.
+  - Handles client requests for file operations.
+  - Assigns chunk handles and chooses chunk server locations.
 
-## Getting Started
+- **Chunk Server**:
+  - Stores actual file chunks.
+  - Responds to client requests for reading and writing data.
+
+- **Client**:
+  - Provides a command-line interface for users.
+  - Interacts with the master and chunk servers via gRPC.
 
 ### Prerequisites
 
 - Python 3.x
-- gRPC and Protocol Buffers
+- `grpcio` and `grpcio-tools` libraries
+- Protocol Buffers compiler (`protoc`)
 
-### Installation
-1. Install dependencies:
+### Setup and Compilation
+
+1. **Install Required Libraries**:
+
    ```bash
    pip install grpcio grpcio-tools
    ```
 
-2. Compile the Protocol Buffers:
+2. **Generate gRPC Code from Protobuf Definitions**:
+
+   Make sure you have the `gfs.proto` file defining the services and messages.
+
    ```bash
    python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. gfs.proto
    ```
 
+   This will generate `gfs_pb2.py` and `gfs_pb2_grpc.py`.
+
+3. **Create Root Directory for Chunk Servers**:
+
+   ```bash
+   mkdir root_chunkserver
+   ```
+
 ### Running the System
 
-1. Start the Master Server:
+1. **Start the Master Server**:
+
    ```bash
    python master_server.py
    ```
 
-2. Start one or more Chunk Servers:
+2. **Start Chunk Servers**:
+
+   Run the following command to start all chunk servers. Each chunk server runs on a different port specified in `Config.chunkserver_locs`.
+
    ```bash
    python chunk_server.py
    ```
 
-3. Run the Client:
+   *Note*: Ensure that the ports specified in `cfg.chunkserver_locs` are available.
+
+### Client Usage
+
+The client provides several commands:
+
+- **Create a File**:
+
+  ```bash
+  python client.py create <file_path>
+  ```
+
+- **List Files in a Directory**:
+
+  ```bash
+  python client.py list <directory_path>
+  ```
+
+- **Append Data to a File**:
+
+  ```bash
+  python client.py append <file_path> <data>
+  ```
+
+- **Read Data from a File**:
+
+  ```bash
+  python client.py read <file_path> <byte_offset> <num_bytes>
+  ```
+
+- **Delete a File**:
+
+  ```bash
+  python client.py delete <file_path>
+  ```
+
+- **Undelete a File**:
+
+  ```bash
+  python client.py undelete <file_path>
+  ```
+
+### Example Commands
+
+1. **Create a New File**:
+
    ```bash
-   python client.py
+   python client.py create /myfile
    ```
 
-### Using the Client
+2. **Append Data to the File**:
 
-The client provides an interactive command-line interface. You can perform the following operations:
+   ```bash
+   python client.py append /myfile "Hello, GFS!"
+   ```
 
-- **Create a File**: `create`
-- **Read a File**: `read`
-- **Write to a File**: `write`
-- **Delete a File**: `delete`
+3. **Read Data from the File**:
 
-## Future Work
+   ```bash
+   python client.py read /myfile 0 10
+   ```
 
-- Implement additional GFS features such as snapshots and checksums.
-- Enhance the client interface for better usability.
-- Improve fault tolerance and scalability.
+4. **List Files in Root Directory**:
 
-## Contributing
+   ```bash
+   python client.py list /
+   ```
 
-Contributions are welcome! Please fork the repository and submit a pull request for any improvements or bug fixes.
+5. **Delete the File**:
 
-## License
+   ```bash
+   python client.py delete /myfile
+   ```
 
-This project is licensed under the MIT License.
+6. **Undelete the File**:
 
----
+   ```bash
+   python client.py undelete /myfile
+   ```
 
-This README provides a comprehensive overview of the project, including its purpose, features, architecture, and instructions for setup and usage. Adjust the repository URL and any specific details as needed for your implementation.
+### Notes
+
+- **Chunk Size**: The chunk size is specified in `common.py` via `Config.chunk_size`. Adjust it as needed.
+
+- **Error Handling**: The system prints error messages for invalid operations or if issues occur during file operations.
+
+- **Data Persistence**: The chunk servers store data in the `root_chunkserver` directory under their respective port numbers.

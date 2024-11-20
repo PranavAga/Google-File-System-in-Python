@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package gfs;
+
+// The message used for sending strings between client and servers
+message String {
+  string st = 1;
+}
+
+// Service definition for communication between Master Server and Client
+service MasterServerToClient {
+  rpc ListFiles(String) returns (String);
+  rpc CreateFile(String) returns (String);
+  rpc AppendFile(String) returns (String);
+  rpc CreateChunk(String) returns (String);
+  rpc ReadFile(String) returns (String);
+  rpc DeleteFile(String) returns (String);
+  rpc UndeleteFile(String) returns (String);
+}
+
+// Service definition for communication between Chunk Server and Client
+service ChunkServerToClient {
+  rpc Create(String) returns (String);
+  rpc GetChunkSpace(String) returns (String);
+  rpc Append(String) returns (String);
+  rpc Read(String) returns (String);
+}
