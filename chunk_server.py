@@ -20,22 +20,28 @@ class ChunkServer(gfs_pb2_grpc.ChunkServerServicer):
         self.locks = {}  # chunk_handle -> threading.Lock()
         self.master_channel = grpc.insecure_channel(f'localhost:{Config.master_port}')
         self.master_stub = gfs_pb2_grpc.MasterServerStub(self.master_channel)
-        threading.Thread(target=self._send_heartbeat, daemon=True).start()
+        threading.Thread(target=self.send_heartbeat, daemon=True).start()
 
-    def _send_heartbeat(self):
+    def send_heartbeat(self):
         while True:
             time.sleep(Config.heartbeat_interval)
             chunks = []
-            for chunk_handle, version in self.chunks.items():
-                chunks.append(gfs_pb2.ChunkMetadata(chunk_handle=chunk_handle, version=version))
+            with threading.Lock():
+                for chunk_handle, version in self.chunks.items():
+                    chunks.append(gfs_pb2.ChunkMetadata(
+                        chunk_handle=chunk_handle,
+                        version=version,
+                        locations=[]  # Not needed here
+                    ))
             request = gfs_pb2.HeartbeatRequest(
                 chunkserver_id=self.chunkserver_id,
                 chunks=chunks
             )
             try:
                 self.master_stub.Heartbeat(request)
+                print(f"Heartbeat sent from chunkserver {self.chunkserver_id}")
             except Exception as e:
-                pass
+                print(f"Heartbeat failed from chunkserver {self.chunkserver_id}: {e}")
 
     def WriteChunk(self, request, context):
         chunk_handle = request.chunk_handle
@@ -45,24 +51,20 @@ class ChunkServer(gfs_pb2_grpc.ChunkServerServicer):
             current_version = self.chunks.get(chunk_handle, 0)
             if version != current_version:
                 return gfs_pb2.WriteResponse(success=False, message="Version mismatch")
-            temp_file = os.path.join(self.chunk_dir, f'{chunk_handle}.tmp')
+            temp_file = os.path.join(self.chunk_dir, f"{chunk_handle}.tmp")
             with open(temp_file, 'wb') as f:
                 f.write(data)
-            self.chunks[chunk_handle] = version  # Version remains same until commit
             return gfs_pb2.WriteResponse(success=True, message="Write prepared")
 
     def WriteCommit(self, request, context):
         chunk_handle = request.chunk_handle
         version = request.version
         with self._get_chunk_lock(chunk_handle):
-            current_version = self.chunks.get(chunk_handle, 0)
-            if version != current_version:
-                return gfs_pb2.WriteCommitResponse(success=False, message="Version mismatch during commit")
-            temp_file = os.path.join(self.chunk_dir, f'{chunk_handle}.tmp')
+            temp_file = os.path.join(self.chunk_dir, f"{chunk_handle}.tmp")
             final_file = os.path.join(self.chunk_dir, chunk_handle)
             if os.path.exists(temp_file):
-                os.rename(temp_file, final_file)
-                self.chunks[chunk_handle] = version + 1  # Increment version
+                os.replace(temp_file, final_file)
+                self.chunks[chunk_handle] = version + 1
                 return gfs_pb2.WriteCommitResponse(success=True, message="Commit succeeded")
             else:
                 return gfs_pb2.WriteCommitResponse(success=False, message="No prepared write to commit")
@@ -79,7 +81,15 @@ class ChunkServer(gfs_pb2_grpc.ChunkServerServicer):
                 return gfs_pb2.ReadResponse(data=b'')
 
     def ReplicateChunk(self, request, context):
-        return self.WriteChunk(request, context)
+        chunk_handle = request.chunk_handle
+        version = request.version
+        data = request.data
+        with self._get_chunk_lock(chunk_handle):
+            final_file = os.path.join(self.chunk_dir, chunk_handle)
+            with open(final_file, 'wb') as f:
+                f.write(data)
+            self.chunks[chunk_handle] = version
+            return gfs_pb2.WriteResponse(success=True, message="Replication successful")
 
     def _get_chunk_lock(self, chunk_handle):
         if chunk_handle not in self.locks:
@@ -88,16 +98,19 @@ class ChunkServer(gfs_pb2_grpc.ChunkServerServicer):
 
 def serve():
     if len(sys.argv) != 2:
+        print("Usage: python chunk_server.py <port>")
         sys.exit(1)
     port = sys.argv[1]
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     gfs_pb2_grpc.add_ChunkServerServicer_to_server(ChunkServer(port), server)
     server.add_insecure_port(f'[::]:{port}')
     server.start()
+    print(f"Chunkserver started on port {port}.")
     try:
         while True:
             time.sleep(86400)
     except KeyboardInterrupt:
+        print("Chunkserver stopping...")
         server.stop(0)
 
 if __name__ == '__main__':

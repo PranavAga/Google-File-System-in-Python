@@ -8,6 +8,7 @@ from common import Config
 def interactive_client():
     print("Welcome to the GFS Client")
     print("Type 'help' for a list of commands, or 'exit' to quit.")
+    master_stub = get_master_stub()
     while True:
         cmd = input(">> ").strip()
         if not cmd:
@@ -32,7 +33,6 @@ Available commands:
                 print("Usage: create <file_path>")
                 continue
             file_path = args[1]
-            master_stub = get_master_stub()
             response = master_stub.CreateFile(gfs_pb2.StringRequest(value=file_path))
             print(response.value)
         elif command == 'append':
@@ -41,7 +41,6 @@ Available commands:
                 continue
             file_path = args[1]
             data = ' '.join(args[2:]).encode()
-            master_stub = get_master_stub()
             append_request = gfs_pb2.AppendRequest(file_path=file_path, data=data)
             response = master_stub.AppendToFile(append_request)
             print(response.message)
@@ -50,22 +49,25 @@ Available commands:
                 print("Usage: read <file_path> <offset> <length>")
                 continue
             file_path = args[1]
-            offset = int(args[2])
-            length = int(args[3])
-            master_stub = get_master_stub()
+            try:
+                offset = int(args[2])
+                length = int(args[3])
+            except ValueError:
+                print("Offset and length must be integers.")
+                continue
             read_request = gfs_pb2.ReadRequest(
                 file_path=file_path,
                 offset=offset,
                 length=length
             )
             response = master_stub.ReadFromFile(read_request)
-            print("Read data:", response.data.decode())
+            print("Read data:")
+            print(response.data.decode())
         elif command == 'list':
             if len(args) != 2:
                 print("Usage: list <directory>")
                 continue
             directory = args[1]
-            master_stub = get_master_stub()
             response = master_stub.ListFiles(gfs_pb2.StringRequest(value=directory))
             print("Files:")
             print(response.value)
@@ -74,7 +76,6 @@ Available commands:
                 print("Usage: delete <file_path>")
                 continue
             file_path = args[1]
-            master_stub = get_master_stub()
             response = master_stub.DeleteFile(gfs_pb2.StringRequest(value=file_path))
             print(response.value)
         else:
