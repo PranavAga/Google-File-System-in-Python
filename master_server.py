@@ -169,15 +169,15 @@ class MasterServer(gfs_pb2_grpc.MasterServerServicer):
         return gfs_pb2.StringResponse(value="File created successfully")
 
     def _select_chunkservers(self):
-        with self.metadata.lock:
-            # Implement logic to select chunkservers, e.g., based on load
-            sorted_chunkservers = sorted(
-                self.metadata.chunkservers.keys(),
-                key=lambda cs_id: self.metadata.chunkserver_loads.get(cs_id, 0)
-            )
-            selected_servers = sorted_chunkservers[:Config.replication_factor]
-            logger.debug(f"Selected chunkservers for new chunk: {selected_servers}")
-            return selected_servers
+        # with self.metadata.lock:
+        # Implement logic to select chunkservers, e.g., based on load
+        sorted_chunkservers = sorted(
+            self.metadata.chunkservers.keys(),
+            key=lambda cs_id: self.metadata.chunkserver_loads.get(cs_id, 0)
+        )
+        selected_servers = sorted_chunkservers[:Config.replication_factor]
+        logger.debug(f"Selected chunkservers for new chunk: {selected_servers}")
+        return selected_servers
 
     def _initiate_chunk_creation(self, chunk_meta):
         logger.info(f"Initiating chunk creation for chunk {chunk_meta.chunk_handle} on locations {chunk_meta.locations}")
@@ -284,17 +284,17 @@ class MasterServer(gfs_pb2_grpc.MasterServerServicer):
             return gfs_pb2.AppendResponse(success=False, message=f"ERROR: {e}")
 
     def _assign_new_primary(self, chunk_meta):
-        with self.metadata.lock:
-            if not chunk_meta.locations:
-                logger.error(f"No available locations to assign primary for chunk {chunk_meta.chunk_handle}.")
-                return
-            # Implement selection logic based on server loads
-            available_servers = [(cs_id, self.metadata.chunkserver_loads.get(cs_id, 0)) for cs_id in chunk_meta.locations]
-            # Sort by load
-            sorted_servers = sorted(available_servers, key=lambda x: x[1])
-            chunk_meta.primary = sorted_servers[0][0]
-            chunk_meta.lease_expiration = time.time() + Config.lease_duration
-            logger.info(f"Assigned new primary {chunk_meta.primary} for chunk {chunk_meta.chunk_handle}")
+        # with self.metadata.lock:
+        if not chunk_meta.locations:
+            logger.error(f"No available locations to assign primary for chunk {chunk_meta.chunk_handle}.")
+            return
+        # Implement selection logic based on server loads
+        available_servers = [(cs_id, self.metadata.chunkserver_loads.get(cs_id, 0)) for cs_id in chunk_meta.locations]
+        # Sort by load
+        sorted_servers = sorted(available_servers, key=lambda x: x[1])
+        chunk_meta.primary = sorted_servers[0][0]
+        chunk_meta.lease_expiration = time.time() + Config.lease_duration
+        logger.info(f"Assigned new primary {chunk_meta.primary} for chunk {chunk_meta.chunk_handle}")
 
     def ReadFromFile(self, request, context):
         file_path = request.file_path
