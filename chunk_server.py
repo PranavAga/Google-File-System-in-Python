@@ -153,7 +153,7 @@ def serve():
     port = sys.argv[1]
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     gfs_pb2_grpc.add_ChunkServerServicer_to_server(ChunkServer(port), server)
-    server.add_insecure_port(f'[::]:{port}')
+    server.add_insecure_port(f'localhost:{port}')
     server.start()
     logger.info(f"Chunkserver started on port {port}.")
     try:

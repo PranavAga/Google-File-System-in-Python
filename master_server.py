@@ -375,7 +375,7 @@ class MasterServer(gfs_pb2_grpc.MasterServerServicer):
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     gfs_pb2_grpc.add_MasterServerServicer_to_server(MasterServer(), server)
-    server.add_insecure_port(f'[::]:{Config.master_port}')
+    server.add_insecure_port(f'localhost:{Config.master_port}')
     server.start()
     logger.info(f"Master server started on port {Config.master_port}.")
     try:
