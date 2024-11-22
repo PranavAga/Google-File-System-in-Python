@@ -23,7 +23,7 @@ logger = logging.getLogger('MasterServer')
 
 
 class ChunkMetadata:
-    def __init__(self, chunk_handle, version=1):
+    def __init__(self, chunk_handle, version=0):
         self.chunk_handle = chunk_handle
         self.version = version
         self.locations = []  # list of chunkserver_ids
