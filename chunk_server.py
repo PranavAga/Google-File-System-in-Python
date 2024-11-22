@@ -126,6 +126,24 @@ class ChunkServer(gfs_pb2_grpc.ChunkServerServicer):
             logger.debug(f"Replication successful for chunk {chunk_handle}.")
             return gfs_pb2.WriteResponse(success=True, message="Replication successful")
 
+    def DeleteChunk(self, request, context):
+        chunk_handle = request.chunk_handle
+        logger.info(f"DeleteChunk called for chunk {chunk_handle}.")
+
+        lock = self._get_chunk_lock(chunk_handle)
+        with lock:
+            chunk_file = os.path.join(self.chunk_dir, chunk_handle)
+            if os.path.exists(chunk_file):
+                os.remove(chunk_file)
+                self.chunks.pop(chunk_handle, None)
+                self.role.pop(chunk_handle, None)
+                self.locks.pop(chunk_handle, None)
+                logger.debug(f"Chunk {chunk_handle} deleted successfully.")
+                return gfs_pb2.DeleteChunkResponse(success=True, message="Chunk deleted")
+            else:
+                logger.warning(f"Chunk {chunk_handle} not found.")
+                return gfs_pb2.DeleteChunkResponse(success=False, message="Chunk not found")
+                
     def UpdateRole(self, request, context):
         chunk_handle = request.chunk_handle
         new_role = request.role

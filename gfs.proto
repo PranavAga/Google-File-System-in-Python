@@ -90,6 +90,15 @@ message RoleUpdateResponse {
   string message = 2;
 }
 
+message DeleteChunkRequest {
+  string chunk_handle = 1;
+}
+
+message DeleteChunkResponse {
+  bool success = 1;
+  string message = 2;
+}
+
 service MasterServer {
   rpc ListFiles(StringRequest) returns (StringResponse);
   rpc CreateFile(StringRequest) returns (StringResponse);
@@ -104,5 +113,6 @@ service ChunkServer {
   rpc WriteCommit(WriteCommitRequest) returns (WriteCommitResponse);
   rpc ReadChunk(ChunkHandle) returns (ReadResponse);
   rpc ReplicateChunk(WriteRequest) returns (WriteResponse);
+  rpc DeleteChunk(DeleteChunkRequest) returns (DeleteChunkResponse);
   rpc UpdateRole(RoleUpdateRequest) returns (RoleUpdateResponse); // New RPC for role updates
 }
